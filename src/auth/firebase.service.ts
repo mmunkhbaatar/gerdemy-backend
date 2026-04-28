@@ -6,10 +6,18 @@ import { join } from 'path';
 export class FirebaseService implements OnModuleInit {
   onModuleInit() {
     if (!admin.apps.length) {
-      const serviceAccountPath = join(process.cwd(), 'serviceAccountKey.json');
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const serviceAccount = require(serviceAccountPath);
-      
+      let serviceAccount: admin.ServiceAccount;
+
+      if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+        // Render / production: env var-аас JSON уншина
+        serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+      } else {
+        // Local dev: файлаас уншина
+        const serviceAccountPath = join(process.cwd(), 'serviceAccountKey.json');
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        serviceAccount = require(serviceAccountPath);
+      }
+
       admin.initializeApp({
         credential: admin.credential.cert(serviceAccount),
       });

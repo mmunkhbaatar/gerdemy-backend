@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
@@ -6,23 +6,20 @@ export class AdminService {
   constructor(private readonly prisma: PrismaService) {}
 
   async getDashboardStats() {
-    const [totalUsers, activeMentors, pendingRequests, transactions] = await Promise.all([
+    const [totalUsers, activeMentors, pendingRequests, revenueResult, totalBookings] = await Promise.all([
       this.prisma.user.count(),
       this.prisma.mentorProfile.count({ where: { verificationStatus: 'APPROVED' } }),
       this.prisma.mentorProfile.count({ where: { verificationStatus: 'PENDING' } }),
-      // To prevent errors since Booking/Payment aren't fully populated yet:
-      // We will mock revenue string for now or return 0
-      Promise.resolve(0)
+      this.prisma.transaction.aggregate({ _sum: { amount: true }, where: { status: 'PAID' } }),
+      this.prisma.booking.count(),
     ]);
 
     const pendingMentors = await this.prisma.mentorProfile.findMany({
       where: { verificationStatus: 'PENDING' },
       include: {
-        user: {
-          select: { displayName: true, email: true, avatarUrl: true }
-        }
+        user: { select: { displayName: true, email: true, avatarUrl: true } }
       },
-      take: 5, // Just get latest 5 for dashboard
+      take: 5,
       orderBy: { createdAt: 'desc' }
     });
 
@@ -30,8 +27,9 @@ export class AdminService {
       totalUsers,
       activeMentors,
       pendingRequests,
-      revenue: transactions, 
-      pendingMentors
+      totalBookings,
+      revenue: Number(revenueResult._sum.amount ?? 0),
+      pendingMentors,
     };
   }
 
@@ -112,6 +110,68 @@ export class AdminService {
       ],
       chartData: chartData
     };
+  }
+
+  async adminCancelBooking(bookingId: string) {
+    return this.prisma.$transaction(async (tx) => {
+      const booking = await tx.booking.findUnique({ where: { id: bookingId } });
+      if (!booking) throw new NotFoundException('Захиалга олдсонгүй');
+      if (booking.status === 'CANCELLED') throw new BadRequestException('Захиалга аль хэдийн цуцлагдсан');
+
+      const updated = await tx.booking.update({
+        where: { id: bookingId },
+        data: { status: 'CANCELLED', paymentStatus: 'REFUNDED' },
+        include: {
+          slot: { include: { mentor: { include: { user: true } } } },
+          student: { include: { user: true } },
+        },
+      });
+
+      await tx.availabilitySlot.update({
+        where: { id: booking.slotId },
+        data: { isBooked: false },
+      });
+
+      return updated;
+    });
+  }
+
+  async deleteUser(userId: string) {
+    return this.prisma.$transaction(async (tx) => {
+      // 1. Student-тай холбоотой bookings цэвэрлэх
+      const student = await tx.studentProfile.findUnique({ where: { userId } });
+      if (student) {
+        const bookings = await tx.booking.findMany({ where: { studentId: student.id } });
+        for (const b of bookings) {
+          await tx.review.deleteMany({ where: { bookingId: b.id } });
+          await tx.transaction.deleteMany({ where: { bookingId: b.id } });
+          await tx.availabilitySlot.update({ where: { id: b.slotId }, data: { isBooked: false } });
+        }
+        await tx.booking.deleteMany({ where: { studentId: student.id } });
+      }
+
+      // 2. Mentor-тай холбоотой slot, booking цэвэрлэх
+      const mentor = await tx.mentorProfile.findUnique({ where: { userId } });
+      if (mentor) {
+        const slots = await tx.availabilitySlot.findMany({ where: { mentorId: mentor.id } });
+        for (const slot of slots) {
+          const bookings = await tx.booking.findMany({ where: { slotId: slot.id } });
+          for (const b of bookings) {
+            await tx.review.deleteMany({ where: { bookingId: b.id } });
+            await tx.transaction.deleteMany({ where: { bookingId: b.id } });
+          }
+          await tx.booking.deleteMany({ where: { slotId: slot.id } });
+        }
+      }
+
+      // 3. Reviews (reviewer/reviewee)
+      await tx.review.deleteMany({
+        where: { OR: [{ reviewerId: userId }, { revieweeId: userId }] },
+      });
+
+      // 4. User-г устгах (cascade → profiles, slots, messages, channels гэх мэт)
+      await tx.user.delete({ where: { id: userId } });
+    });
   }
 
   async getAllBookings(mentorId?: string) {

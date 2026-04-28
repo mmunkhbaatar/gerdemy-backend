@@ -1,4 +1,4 @@
-import { Controller, Get, Patch, Param, Body, UseGuards, Query } from '@nestjs/common';
+import { Controller, Get, Patch, Delete, Param, Body, UseGuards, Query } from '@nestjs/common';
 import { AdminService } from './admin.service';
 import { AuthGuard } from '../auth/auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
@@ -39,6 +39,16 @@ export class AdminController {
   @Get('bookings')
   async getAllBookings(@Query('mentorId') mentorId?: string) {
     return this.adminService.getAllBookings(mentorId);
+  }
+
+  @Delete('bookings/:id')
+  async cancelBooking(@Param('id') id: string) {
+    return this.adminService.adminCancelBooking(id);
+  }
+
+  @Delete('users/:id')
+  async deleteUser(@Param('id') id: string) {
+    return this.adminService.deleteUser(id);
   }
 
   @Get('reports')
